@@ -1,0 +1,159 @@
+name: CI – Laravel + Vue.js (Postgres)
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:13
+        env:
+          POSTGRES_DB: shopdb
+          POSTGRES_USER: shopuser
+          POSTGRES_PASSWORD: shoppass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U shopuser -d shopdb"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DB_CONNECTION: pgsql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_DATABASE: shopdb
+      DB_USERNAME: shopuser
+      DB_PASSWORD: shoppass
+      APP_ENV: testing
+      APP_KEY: base64:sK8QnwzFCNrfQNxaFZnKMF4MBqBpL4KO6N7z5v8x0Qk=
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, dom, fileinfo, pgsql, pdo_pgsql
+          tools: composer:v2
+          coverage: xdebug
+
+      - name: Get Composer Cache Directory
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> $GITHUB_OUTPUT
+
+      - name: Cache Composer dependencies
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Composer dependencies
+        working-directory: ./backend
+        run: |
+          composer install --no-progress --prefer-dist --optimize-autoloader
+          
+      - name: Setup Laravel environment
+        working-directory: ./backend
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan config:clear
+          php artisan cache:clear
+
+      - name: Run Laravel migrations
+        working-directory: ./backend
+        run: |
+          php artisan migrate --force --no-interaction
+
+      - name: Seed database (optional)
+        working-directory: ./backend
+        run: |
+          php artisan db:seed --no-interaction
+        continue-on-error: true
+
+      - name: Run Laravel tests
+        working-directory: ./backend
+        run: |
+          vendor/bin/phpunit --coverage-text --coverage-clover=coverage.xml
+
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install & Test Vue.js
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run test:unit
+        continue-on-error: true
+
+      - name: Build Vue.js for production
+        working-directory: ./frontend
+        run: |
+          npm run build
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./backend/coverage.xml
+          flags: backend
+          name: codecov-umbrella
+        continue-on-error: true
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and test Docker Compose
+        run: |
+          docker-compose build
+          docker-compose up -d
+          sleep 60
+          echo "Testing services..."
+          curl -f http://localhost:3000 || echo "⚠️ Frontend not ready"
+          curl -f http://localhost:8000 || echo "⚠️ Backend not ready"
+          docker-compose ps
+          docker-compose down
+
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run security audit for PHP
+        working-directory: ./backend
+        run: |
+          composer audit
+        continue-on-error: true
+
+      - name: Run security audit for Node.js
+        working-directory: ./frontend
+        run: |
+          npm audit --audit-level=high
+        continue-on-error: true

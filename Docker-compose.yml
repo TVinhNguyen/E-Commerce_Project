@@ -1,0 +1,48 @@
+version: "3.9"
+services:
+  backend:
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_DATABASE=shopdb
+      - DB_USERNAME=shopuser
+      - DB_PASSWORD=shoppass
+    volumes:
+      - ./backend:/var/www/html
+
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+  db:
+    image: postgres:13
+    environment:
+      POSTGRES_DB: shopdb
+      POSTGRES_USER: shopuser
+      POSTGRES_PASSWORD: shoppass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shopuser -d shopdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
